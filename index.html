@@ -3,6 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="google-site-verification" content="W5ocamVQVmJEK5lnZZzv1ZgWZvbgfdX0N1g7OH8y7QQ" />
+<meta name="theme-color" content="#07080c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Angel">
+<meta name="description" content="Angel - 專業加密貨幣分析平台，即時幣價、K線圖、AI進場分析">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%2307080c' rx='20'/><text y='.9em' font-size='80' x='10' fill='%2300d68f'>A</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Angel</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -979,6 +987,42 @@ setInterval(()=>{if(document.getElementById('page-futures').classList.contains('
 <div style="text-align:center;padding:10px 0 16px;font-size:10px;color:#3d4260;font-family:var(--mono);letter-spacing:1px;">
   made with ♥ by j
 </div>
+
+<!-- PWA Install Banner -->
+<div id="installBanner" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg4);border:1px solid var(--border2);border-radius:12px;padding:12px 20px;z-index:999;display:none;align-items:center;gap:12px;box-shadow:0 4px 20px rgba(0,0,0,0.5);">
+  <div>
+    <div style="font-size:13px;font-weight:600;color:var(--text);">安裝 Angel App</div>
+    <div style="font-size:11px;color:var(--text2);">加入主畫面，像 App 一樣使用</div>
+  </div>
+  <button id="installBtn" style="padding:7px 16px;background:var(--green);border:none;border-radius:8px;color:#000;font-size:12px;font-weight:700;cursor:pointer;">安裝</button>
+  <button onclick="document.getElementById('installBanner').style.display='none'" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:0;">✕</button>
+</div>
+
+<script>
+// PWA Install
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const banner = document.getElementById('installBanner');
+  banner.style.display = 'flex';
+});
+document.getElementById('installBtn')?.addEventListener('click', async () => {
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const result = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  document.getElementById('installBanner').style.display = 'none';
+});
+window.addEventListener('appinstalled', () => {
+  document.getElementById('installBanner').style.display = 'none';
+});
+
+// Service Worker
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
 </body>
 </html>
 <div id="settingsModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:999;align-items:center;justify-content:center;">
