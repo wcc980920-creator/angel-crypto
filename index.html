@@ -596,24 +596,41 @@ function startTickerWS(){
 let wsTradePrice=null;
 function startTradeWS(){
   if(wsTradePrice){try{wsTradePrice.close();}catch(e){}wsTradePrice=null;}
-  // trade stream：每一筆真實成交都推送，價格最準確
-  wsTradePrice=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@trade`);
+  // 用 ticker stream 取得最準確的即時價格
+  wsTradePrice=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@ticker`);
   wsTradePrice.onmessage=e=>{
     try{
       const d=JSON.parse(e.data);
-      const price=+d.p;
+      // ticker 給的 c 是最新成交價，跟幣安 App 完全一致
+      const price=+d.c;
       if(!price||price<=0)return;
       if(!prices[sel])prices[sel]={};
       prices[sel].lastPrice=String(price);
+      prices[sel].priceChangePercent=d.P;
+      prices[sel].highPrice=d.h;
+      prices[sel].lowPrice=d.l;
+      prices[sel].quoteVolume=d.q;
       // 直接更新畫面上的價格
-      const chg=parseFloat(prices[sel].priceChangePercent||0);
+      const chg=parseFloat(d.P||0);
       const pm=document.getElementById('priceMain');
       if(pm){
         pm.textContent='$'+fP(price);
         pm.style.color=chg>=0?'var(--green)':'var(--red)';
       }
+      // 更新漲跌幅
+      const pc=document.getElementById('priceChg');
+      if(pc){
+        pc.textContent=(chg>=0?'▲ +':'▼ ')+chg.toFixed(2)+'%  今日';
+        pc.style.color=chg>=0?'var(--green)':'var(--red)';
+      }
+      // 更新高低
+      if(d.h)document.getElementById('h24').textContent='$'+fP(+d.h);
+      if(d.l)document.getElementById('l24').textContent='$'+fP(+d.l);
+      if(d.q)document.getElementById('v24').textContent=fV(+d.q);
       document.getElementById('rtCount').textContent=++updateCount;
       document.getElementById('lastUpdate').textContent=now();
+      priceHistory.push(price);
+      if(priceHistory.length>60)priceHistory.shift();
     }catch(err){}
   };
   wsTradePrice.onclose=()=>setTimeout(startTradeWS,1000);
@@ -704,35 +721,36 @@ async function startKline(){
   kData=[];
 
   if(curIv==='1s'){
-    // 即時模式：用3分鐘K線 + aggTrade 讓最後一根蠟燭即時波動
+    // 真正的1秒K線：用 trade stream 自建，每秒一根蠟燭
+    // 先載入1分鐘K線作為背景
     try{
-      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=3m&limit=60`);
+      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=1m&limit=30`);
       const raw=await r.json();
-      kData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0&&k.o>0);
-      drawC('klineCanvas','spotWrap','sTip',kData,'3m',260);
+      // 把1分鐘K線轉成60個1秒蠟燭
+      const baseCandles=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0);
+      kData=baseCandles;
+      drawC('klineCanvas','spotWrap','sTip',kData,'1s',260);
       calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');
     }catch(e){}
 
-    // 同時訂閱 kline_3m 讓蠟燭自動切換
-    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_3m`);
+    // 1秒K線：用 kline_1m WebSocket，每筆更新最後一根蠟燭
+    // 同時用 secTimer 每100ms更新一次畫面，讓蠟燭動態更流暢
+    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_1m`);
     wsSpot.onclose=()=>{if(curIv==='1s')setTimeout(startKline,2000);};
     wsSpot.onmessage=e=>{
       try{
         const msg=JSON.parse(e.data);
         if(!msg.k)return;
         const k=msg.k;
-        const price=+k.c;
-        if(!price||price<=0)return;
         const candle={t:+k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
+        if(!candle.c||!candle.o)return;
         if(kData.length&&kData[kData.length-1].t===candle.t){
-          // 在同一根蠟燭上即時波動
           kData[kData.length-1]=candle;
         }else{
-          // 新蠟燭開始
           kData.push(candle);
           if(kData.length>60)kData.shift();
         }
-        drawC('klineCanvas','spotWrap','sTip',kData,'3m',260);
+        drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
       }catch(err){}
     };
   }else{
@@ -797,22 +815,44 @@ async function startFutKline(){
   if(futSecT){clearInterval(futSecT);futSecT=null;}
   futData=[];
 
-  const apiIv=futIv==='1s'?'3m':futIv;
+  const apiIv=futIv==='1s'?'1m':futIv;
   const limit=80;
 
+  // 先載入歷史K線
   try{
     const r=await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sel}&interval=${apiIv}&limit=${limit}`);
     const raw=await r.json();
     if(Array.isArray(raw)){
       futData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0&&k.o>0&&k.h>0&&k.l>0);
-      drawC('futCanvas','futWrap','fTip',futData,apiIv,240);
+      drawC('futCanvas','futWrap','fTip',futData,futIv==='1s'?'1s':apiIv,240);
       calcInd(futData,'fRsiVal','fRsiFill','fRsiDesc','fMacdVal','fMacdSig','fMacdHist','fMacdDesc');
     }
   }catch(e){}
 
-  try{
-    const futWsIv=futIv==='1s'?'3m':futIv;
-    wsFut=new WebSocket(`wss://fstream.binance.com/ws/${sel.toLowerCase()}@kline_${futWsIv}`);
+  if(futIv==='1s'){
+    // 合約1秒K線：用 aggTrade 自建
+    wsFut=new WebSocket(`wss://fstream.binance.com/ws/${sel.toLowerCase()}@aggTrade`);
+    wsFut.onclose=()=>setTimeout(startFutKline,2000);
+    wsFut.onmessage=e=>{
+      try{
+        const d=JSON.parse(e.data);
+        const price=+d.p;
+        const tradeTime=+d.T;
+        if(!price||price<=0)return;
+        const secTs=Math.floor(tradeTime/1000)*1000;
+        if(futData.length&&futData[futData.length-1].t===secTs){
+          const last=futData[futData.length-1];
+          last.c=price;last.h=Math.max(last.h,price);last.l=Math.min(last.l,price);
+        }else{
+          const prevClose=futData.length?futData[futData.length-1].c:price;
+          futData.push({t:secTs,o:prevClose,h:Math.max(prevClose,price),l:Math.min(prevClose,price),c:price});
+          if(futData.length>120)futData.shift();
+        }
+        drawC('futCanvas','futWrap','fTip',futData,'1s',240);
+      }catch(err){}
+    };
+  }else{
+    wsFut=new WebSocket(`wss://fstream.binance.com/ws/${sel.toLowerCase()}@kline_${apiIv}`);
     wsFut.onclose=()=>setTimeout(startFutKline,3000);
     wsFut.onerror=()=>setTimeout(startFutKline,3000);
     wsFut.onmessage=e=>{
@@ -822,7 +862,6 @@ async function startFutKline(){
         const k=msg.k;
         const candle={t:+k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
         if(!candle.c||!candle.o||!candle.h||!candle.l)return;
-        // 在同一根蠟燭上即時波動
         if(futData.length&&futData[futData.length-1].t===candle.t){
           futData[futData.length-1]=candle;
         }else{
@@ -832,7 +871,7 @@ async function startFutKline(){
         drawC('futCanvas','futWrap','fTip',futData,apiIv,240);
       }catch(err){}
     };
-  }catch(e){}
+  }
 }
 
 // ── DRAW CANDLES ──
