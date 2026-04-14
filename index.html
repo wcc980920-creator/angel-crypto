@@ -579,22 +579,41 @@ function startTickerWS(){
 
 function startPriceStream(){
   if(wsTradePrice){try{wsTradePrice.close();}catch(e){}wsTradePrice=null;}
-  // 用 REST API 每500ms抓一次最新價格，最簡單最準確
+  // 用 REST API 每500ms抓一次最新價格
   wsTradePrice={_timer:setInterval(async()=>{
     try{
-      const r=await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sel}`);
+      const r=await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sel}`);
       const d=await r.json();
-      const price=parseFloat(d.price);
+      const price=parseFloat(d.lastPrice);
       if(!price||price<=0)return;
       if(!prices[sel])prices[sel]={};
       prices[sel].lastPrice=String(price);
-      const chg=parseFloat(prices[sel]?.priceChangePercent||0);
+      prices[sel].priceChangePercent=d.priceChangePercent;
+      prices[sel].highPrice=d.highPrice;
+      prices[sel].lowPrice=d.lowPrice;
+      prices[sel].quoteVolume=d.quoteVolume;
+      const chg=parseFloat(d.priceChangePercent||0);
+      // 更新主價格
       const pm=document.getElementById('priceMain');
       if(pm){pm.textContent='$'+fP(price);pm.style.color=chg>=0?'var(--green)':'var(--red)';}
+      // 更新漲跌幅
+      const pc=document.getElementById('priceChg');
+      if(pc){pc.textContent=(chg>=0?'▲ +':'▼ ')+chg.toFixed(2)+'%  今日';pc.style.color=chg>=0?'var(--green)':'var(--red)';}
+      // 更新高低成交量
+      document.getElementById('h24').textContent='$'+fP(parseFloat(d.highPrice));
+      document.getElementById('l24').textContent='$'+fP(parseFloat(d.lowPrice));
+      document.getElementById('v24').textContent=fV(parseFloat(d.quoteVolume));
       document.getElementById('rtCount').textContent=++updateCount;
       document.getElementById('lastUpdate').textContent=now();
       priceHistory.push(price);
       if(priceHistory.length>60)priceHistory.shift();
+      // 同步更新K線最後一根蠟燭的收盤價
+      if(kData.length>0){
+        const last=kData[kData.length-1];
+        last.c=price;
+        last.h=Math.max(last.h,price);
+        last.l=Math.min(last.l,price);
+      }
     }catch(e){}
   },500),close(){clearInterval(this._timer);}};
 }
