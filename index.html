@@ -554,8 +554,7 @@ function setOnline(ok){
 // ── TICKER WS ──
 function startTickerWS(){
   if(wsTick){try{wsTick.close();}catch(e){}wsTick=null;}
-
-  // miniTicker：更新所有幣種列表價格
+  // miniTicker 只更新幣種列表
   const top100=COINS.slice(0,100);
   const streams=top100.map(c=>c.sym.toLowerCase()+'@miniTicker').join('/');
   wsTick=new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
@@ -565,64 +564,39 @@ function startTickerWS(){
     try{
       const d=JSON.parse(e.data).data;if(!d||!d.s)return;
       const sym=d.s;if(!prices[sym])prices[sym]={};
-      // miniTicker 只更新列表資訊，不覆蓋選中幣種的即時價格
-      // miniTicker 不覆蓋選中幣種的 lastPrice（由 aggTrade 負責）
-      if(sym!==sel){
-        prices[sym].lastPrice=d.c;
-        prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
-      }
+      prices[sym].lastPrice=d.c;
       prices[sym].highPrice=d.h;
       prices[sym].lowPrice=d.l;
       prices[sym].quoteVolume=d.q;
-      if(sym===sel){
-        if(document.getElementById('page-ranking').classList.contains('active'))renderRanking();
-        // miniTicker 只更新漲跌幅，不覆蓋 aggTrade 的即時價格
-        prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
-        const chgEl=document.getElementById('priceChg');
-        const chg=parseFloat(prices[sym].priceChangePercent);
-        if(chgEl){
-          chgEl.textContent=(chg>=0?'▲ +':'▼ ')+Math.abs(chg).toFixed(2)+'%  今日';
-          chgEl.style.color=chg>=0?'var(--green)':'var(--red)';
-        }
-        document.getElementById('h24').textContent='$'+fP(+d.h);
-        document.getElementById('l24').textContent='$'+fP(+d.l);
-        document.getElementById('v24').textContent=fV(+d.q);
-        updateRTData();
-      }
+      prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
       renderList();
     }catch(err){}
   };
   wsTick.onclose=()=>setTimeout(startTickerWS,2000);
-
-  // 單獨為選中幣種開 trade WebSocket（最即時的成交價）
-  startTradeWS();
+  // 開啟選中幣種的即時價格
+  startPriceStream();
 }
 
-let wsTradePrice=null;
-function startTradeWS(){
+function startPriceStream(){
   if(wsTradePrice){try{wsTradePrice.close();}catch(e){}wsTradePrice=null;}
-  // aggTrade：每筆真實成交價，跟幣安 App 顯示的一致
-  wsTradePrice=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@aggTrade`);
-  wsTradePrice.onmessage=e=>{
+  // 用 REST API 每500ms抓一次最新價格，最簡單最準確
+  wsTradePrice={_timer:setInterval(async()=>{
     try{
-      const d=JSON.parse(e.data);
-      const price=+d.p;
+      const r=await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sel}`);
+      const d=await r.json();
+      const price=parseFloat(d.price);
       if(!price||price<=0)return;
       if(!prices[sel])prices[sel]={};
       prices[sel].lastPrice=String(price);
-      const chg=parseFloat(prices[sel].priceChangePercent||0);
+      const chg=parseFloat(prices[sel]?.priceChangePercent||0);
       const pm=document.getElementById('priceMain');
-      if(pm){
-        pm.textContent='$'+fP(price);
-        pm.style.color=chg>=0?'var(--green)':'var(--red)';
-      }
+      if(pm){pm.textContent='$'+fP(price);pm.style.color=chg>=0?'var(--green)':'var(--red)';}
       document.getElementById('rtCount').textContent=++updateCount;
       document.getElementById('lastUpdate').textContent=now();
       priceHistory.push(price);
       if(priceHistory.length>60)priceHistory.shift();
-    }catch(err){}
-  };
-  wsTradePrice.onclose=()=>setTimeout(startTradeWS,500);
+    }catch(e){}
+  },500),close(){clearInterval(this._timer);}};
 }
 
 async function updateRTData(){
@@ -710,17 +684,15 @@ async function startKline(){
   kData=[];
 
   if(curIv==='1s'){
-    // 即時模式：用5分鐘K線，蠟燭夠寬，最後一根即時波動
+    // 即時模式：用1分鐘K線 + WebSocket即時更新最後一根蠟燭
     try{
-      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=5m&limit=50`);
+      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=1m&limit=100`);
       const raw=await r.json();
       kData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0);
-      drawC('klineCanvas','spotWrap','sTip',kData,'5m',260);
+      drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
       calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');
     }catch(e){}
-
-    // 訂閱 kline_5m，最後一根蠟燭即時波動
-    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_5m`);
+    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_1m`);
     wsSpot.onclose=()=>{if(curIv==='1s')setTimeout(startKline,2000);};
     wsSpot.onmessage=e=>{
       try{
@@ -730,13 +702,12 @@ async function startKline(){
         const candle={t:+k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
         if(!candle.c||!candle.o)return;
         if(kData.length&&kData[kData.length-1].t===candle.t){
-          // 在同一根蠟燭上即時波動
           kData[kData.length-1]=candle;
         }else{
           kData.push(candle);
-          if(kData.length>50)kData.shift();
+          if(kData.length>100)kData.shift();
         }
-        drawC('klineCanvas','spotWrap','sTip',kData,'5m',260);
+        drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
       }catch(err){}
     };
   }else{
