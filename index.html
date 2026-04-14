@@ -564,10 +564,13 @@ function startTickerWS(){
     try{
       const d=JSON.parse(e.data).data;if(!d||!d.s)return;
       const sym=d.s;if(!prices[sym])prices[sym]={};
+      // miniTicker 只更新統計數據，不影響價格顯示
+      if(!prices[sym])prices[sym]={};
       prices[sym].lastPrice=d.c;
       prices[sym].highPrice=d.h;
       prices[sym].lowPrice=d.l;
       prices[sym].quoteVolume=d.q;
+      prices[sym].openPrice=d.o;
       prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
       renderList();
     }catch(err){}
@@ -607,12 +610,17 @@ function startPriceStream(){
       document.getElementById('lastUpdate').textContent=now();
       priceHistory.push(price);
       if(priceHistory.length>60)priceHistory.shift();
-      // 同步更新K線最後一根蠟燭的收盤價
+      // 同步更新K線最後一根蠟燭並重畫
       if(kData.length>0){
         const last=kData[kData.length-1];
         last.c=price;
         last.h=Math.max(last.h,price);
         last.l=Math.min(last.l,price);
+        // 重畫K線讓蠟燭即時更新
+        const activeTab=document.querySelector('.page.active');
+        if(activeTab&&activeTab.id==='page-spot'){
+          drawC('klineCanvas','spotWrap','sTip',kData,curIv==='1s'?'1m':curIv,260);
+        }
       }
     }catch(e){}
   },500),close(){clearInterval(this._timer);}};
