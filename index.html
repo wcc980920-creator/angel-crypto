@@ -247,7 +247,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span class="ctitle" style="margin:0;">現貨 K 線（即時）</span>
           <div class="iv-row" id="spotIvRow">
-            <button class="ivb" onclick="setIv('1s',this)">1秒</button>
+            <button class="ivb" onclick="setIv('1s',this)">即時</button>
             <button class="ivb active" onclick="setIv('1m',this)">1分</button>
             <button class="ivb" onclick="setIv('3m',this)">3分</button>
             <button class="ivb" onclick="setIv('5m',this)">5分</button>
@@ -327,7 +327,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span class="ctitle" style="margin:0;">合約 K 線（即時）</span>
           <div class="iv-row" id="futIvRow">
-            <button class="ivb" onclick="setFutIv('1s',this)">1秒</button>
+            <button class="ivb" onclick="setFutIv('1s',this)">即時</button>
             <button class="ivb active" onclick="setFutIv('1m',this)">1分</button>
             <button class="ivb" onclick="setFutIv('5m',this)">5分</button>
             <button class="ivb" onclick="setFutIv('15m',this)">15分</button>
@@ -476,7 +476,7 @@ let API_KEY=localStorage.getItem('cdApiKey')||'gsk_vljIREPqdsXugPuiiZ2gWGdyb3FY1
 
 let prices={},sel='BTCUSDT',curIv='1m',futIv='1m';
 let wl=JSON.parse(localStorage.getItem('cdwl')||'[]');
-let kData=[],futData=[],wsTick=null,wsSpot=null,wsFut=null,secT=null,futSecT=null;
+let kData=[],futData=[],wsTick=null,wsSpot=null,wsFut=null,wsPrice=null,wsTradePrice=null,secT=null,futSecT=null;
 let updateCount=0,priceHistory=[];
 let spotRisk='stable',futRisk='stable';
 
@@ -553,20 +553,64 @@ function setOnline(ok){
 
 // ── TICKER WS ──
 function startTickerWS(){
-  if(wsTick)wsTick.close();
-  const top50=COINS.slice(0,50);const streams=top50.map(c=>c.sym.toLowerCase()+'@miniTicker').join('/');
+  if(wsTick){try{wsTick.close();}catch(e){}wsTick=null;}
+
+  // miniTicker：更新所有幣種列表價格
+  const top100=COINS.slice(0,100);
+  const streams=top100.map(c=>c.sym.toLowerCase()+'@miniTicker').join('/');
   wsTick=new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
   wsTick.onopen=()=>setOnline(true);
   wsTick.onerror=()=>setOnline(false);
   wsTick.onmessage=e=>{
-    const d=JSON.parse(e.data).data;if(!d||!d.s)return;
-    const sym=d.s;if(!prices[sym])prices[sym]={};
-    prices[sym].lastPrice=d.c;prices[sym].highPrice=d.h;prices[sym].lowPrice=d.l;prices[sym].quoteVolume=d.q;
-    prices[sym].priceChangePercent=((d.c-d.o)/d.o*100).toFixed(2);
-    if(sym===sel){updateCount++;if(document.getElementById('page-ranking').classList.contains('active')&&updateCount%30===0)renderRanking();document.getElementById('rtCount').textContent=updateCount;document.getElementById('lastUpdate').textContent=now();updateSpot(prices[sym]);priceHistory.push(parseFloat(d.c));if(priceHistory.length>60)priceHistory.shift();updateRTData();}
-    renderList();
+    try{
+      const d=JSON.parse(e.data).data;if(!d||!d.s)return;
+      const sym=d.s;if(!prices[sym])prices[sym]={};
+      prices[sym].lastPrice=d.c;
+      prices[sym].highPrice=d.h;
+      prices[sym].lowPrice=d.l;
+      prices[sym].quoteVolume=d.q;
+      prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
+      if(sym===sel){
+        if(document.getElementById('page-ranking').classList.contains('active'))renderRanking();
+        document.getElementById('rtCount').textContent=++updateCount;
+        document.getElementById('lastUpdate').textContent=now();
+        priceHistory.push(parseFloat(d.c));
+        if(priceHistory.length>60)priceHistory.shift();
+        updateRTData();
+      }
+      renderList();
+    }catch(err){}
   };
-  wsTick.onclose=()=>setTimeout(startTickerWS,2000);wsTick.onerror=()=>setTimeout(startTickerWS,2000);
+  wsTick.onclose=()=>setTimeout(startTickerWS,2000);
+
+  // 單獨為選中幣種開 trade WebSocket（最即時的成交價）
+  startTradeWS();
+}
+
+let wsTradePrice=null;
+function startTradeWS(){
+  if(wsTradePrice){try{wsTradePrice.close();}catch(e){}wsTradePrice=null;}
+  // trade stream：每一筆真實成交都推送，價格最準確
+  wsTradePrice=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@trade`);
+  wsTradePrice.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      const price=+d.p;
+      if(!price||price<=0)return;
+      if(!prices[sel])prices[sel]={};
+      prices[sel].lastPrice=String(price);
+      // 直接更新畫面上的價格
+      const chg=parseFloat(prices[sel].priceChangePercent||0);
+      const pm=document.getElementById('priceMain');
+      if(pm){
+        pm.textContent='$'+fP(price);
+        pm.style.color=chg>=0?'var(--green)':'var(--red)';
+      }
+      document.getElementById('rtCount').textContent=++updateCount;
+      document.getElementById('lastUpdate').textContent=now();
+    }catch(err){}
+  };
+  wsTradePrice.onclose=()=>setTimeout(startTradeWS,1000);
 }
 
 async function updateRTData(){
@@ -647,16 +691,63 @@ function renderWL(){
 // ── SPOT KLINE ──
 function setIv(iv,btn){curIv=iv;document.querySelectorAll('#spotIvRow .ivb').forEach(b=>b.classList.remove('active'));btn.classList.add('active');startKline();}
 async function startKline(){
-  if(wsSpot){wsSpot.close();wsSpot=null;}if(secT){clearInterval(secT);secT=null;}
-  const apiIv=curIv==='1s'?'1m':curIv,limit=curIv==='1M'?24:curIv==='1s'?120:80;
-  try{const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=${apiIv}&limit=${limit}`);kData=(await r.json()).map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));drawC('klineCanvas','spotWrap','sTip',kData,curIv,260);calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');}catch(e){}
-  if(curIv!=='1s'){
+  if(wsSpot){try{wsSpot.close();}catch(e){}wsSpot=null;}
+  if(secT){clearInterval(secT);secT=null;}
+  kData=[];
+
+  if(curIv==='1s'){
+    // 即時模式：載入1分鐘K線，用aggTrade即時更新最後一根蠟燭
+    try{
+      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=1m&limit=60`);
+      const raw=await r.json();
+      kData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0&&k.o>0);
+      drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
+      calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');
+    }catch(e){}
+    // aggTrade：每一筆成交都推送，在最後一根蠟燭上即時更新
+    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@aggTrade`);
+    wsSpot.onclose=()=>{if(curIv==='1s')setTimeout(startKline,2000);};
+    wsSpot.onmessage=e=>{
+      try{
+        const d=JSON.parse(e.data);
+        const price=+d.p;
+        if(!price||price<=0)return;
+        if(!kData.length)return;
+        // 直接在最後一根蠟燭上更新（蠟燭即時波動）
+        const last=kData[kData.length-1];
+        last.c=price;
+        last.h=Math.max(last.h,price);
+        last.l=Math.min(last.l,price);
+        drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
+      }catch(err){}
+    };
+  }else{
+    const limit=curIv==='1M'?24:80;
+    try{
+      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=${curIv}&limit=${limit}`);
+      const raw=await r.json();
+      kData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0&&k.o>0);
+      drawC('klineCanvas','spotWrap','sTip',kData,curIv,260);
+      calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');
+    }catch(e){}
     wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_${curIv}`);
     wsSpot.onclose=()=>{if(curIv!=='1s')setTimeout(startKline,2000);};
-    wsSpot.onerror=()=>{if(curIv!=='1s')setTimeout(startKline,2000);};
-    wsSpot.onmessage=e=>{const k=JSON.parse(e.data).k;const c={t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};if(kData.length&&kData[kData.length-1].t===c.t)kData[kData.length-1]=c;else{kData.push(c);if(kData.length>limit)kData.shift();}drawC('klineCanvas','spotWrap','sTip',kData,curIv,260);};
-  }else{
-    secT=setInterval(()=>{if(!prices[sel]?.lastPrice)return;const price=parseFloat(prices[sel].lastPrice);const ts=Math.floor(Date.now()/1000)*1000;if(kData.length&&kData[kData.length-1].t===ts){const l=kData[kData.length-1];l.c=price;l.h=Math.max(l.h,price);l.l=Math.min(l.l,price);}else{kData.push({t:ts,o:price,h:price,l:price,c:price});if(kData.length>60)kData.shift();}drawC('klineCanvas','spotWrap','sTip',kData,'1s',260);},1000);
+    wsSpot.onmessage=e=>{
+      try{
+        const msg=JSON.parse(e.data);
+        if(!msg.k)return;
+        const k=msg.k;
+        const candle={t:+k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
+        if(!candle.c||!candle.o)return;
+        if(kData.length&&kData[kData.length-1].t===candle.t){
+          kData[kData.length-1]=candle;
+        }else{
+          kData.push(candle);
+          if(kData.length>limit)kData.shift();
+        }
+        drawC('klineCanvas','spotWrap','sTip',kData,curIv,260);
+      }catch(err){}
+    };
   }
 }
 
