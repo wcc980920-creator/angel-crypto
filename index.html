@@ -565,17 +565,23 @@ function startTickerWS(){
     try{
       const d=JSON.parse(e.data).data;if(!d||!d.s)return;
       const sym=d.s;if(!prices[sym])prices[sym]={};
-      prices[sym].lastPrice=d.c;
+      // miniTicker 只更新列表資訊，不覆蓋選中幣種的即時價格
+      if(sym!==sel){
+        prices[sym].lastPrice=d.c;
+      }
       prices[sym].highPrice=d.h;
       prices[sym].lowPrice=d.l;
       prices[sym].quoteVolume=d.q;
       prices[sym].priceChangePercent=((parseFloat(d.c)-parseFloat(d.o))/parseFloat(d.o)*100).toFixed(2);
       if(sym===sel){
         if(document.getElementById('page-ranking').classList.contains('active'))renderRanking();
-        document.getElementById('rtCount').textContent=++updateCount;
-        document.getElementById('lastUpdate').textContent=now();
         priceHistory.push(parseFloat(d.c));
         if(priceHistory.length>60)priceHistory.shift();
+        // 只更新統計數據，不更新主價格（trade WS 負責主價格）
+        const h=parseFloat(d.h),l=parseFloat(d.l);
+        document.getElementById('h24').textContent='$'+fP(h);
+        document.getElementById('l24').textContent='$'+fP(l);
+        document.getElementById('v24').textContent=fV(parseFloat(d.q));
         updateRTData();
       }
       renderList();
@@ -664,9 +670,11 @@ function updateSpot(d){
   const c=COINS.find(x=>x.sym===sel);
   document.getElementById('coinLabel').textContent=(c?c.short:sel)+' / USDT';
   document.getElementById('futLabel').textContent=(c?c.short:sel)+' / USDT 永續合約';
-  const pr=parseFloat(d.lastPrice),chg=parseFloat(d.priceChangePercent);
-  const pm=document.getElementById('priceMain');pm.textContent='$'+fP(pr);pm.style.color=chg>=0?'var(--green)':'var(--red)';
-  const pc=document.getElementById('priceChg');pc.textContent=(chg>=0?'▲ +':'▼ ')+chg.toFixed(2)+'%  今日';pc.style.color=chg>=0?'var(--green)':'var(--red)';
+  const chg=parseFloat(d.priceChangePercent);
+  // 不在這裡更新主價格，交給 trade WS 負責
+  const pc=document.getElementById('priceChg');
+  pc.textContent=(chg>=0?'▲ +':'▼ ')+chg.toFixed(2)+'%  今日';
+  pc.style.color=chg>=0?'var(--green)':'var(--red)';
   document.getElementById('h24').textContent='$'+fP(parseFloat(d.highPrice));
   document.getElementById('l24').textContent='$'+fP(parseFloat(d.lowPrice));
   document.getElementById('v24').textContent=fV(parseFloat(d.quoteVolume));
@@ -696,29 +704,35 @@ async function startKline(){
   kData=[];
 
   if(curIv==='1s'){
-    // 即時模式：載入1分鐘K線，用aggTrade即時更新最後一根蠟燭
+    // 即時模式：用3分鐘K線 + aggTrade 讓最後一根蠟燭即時波動
     try{
-      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=1m&limit=60`);
+      const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${sel}&interval=3m&limit=60`);
       const raw=await r.json();
       kData=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]})).filter(k=>k.c>0&&k.o>0);
-      drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
+      drawC('klineCanvas','spotWrap','sTip',kData,'3m',260);
       calcInd(kData,'rsiVal','rsiFill','rsiDesc','macdVal','macdSig','macdHist','macdDesc');
     }catch(e){}
-    // aggTrade：每一筆成交都推送，在最後一根蠟燭上即時更新
-    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@aggTrade`);
+
+    // 同時訂閱 kline_3m 讓蠟燭自動切換
+    wsSpot=new WebSocket(`wss://stream.binance.com:9443/ws/${sel.toLowerCase()}@kline_3m`);
     wsSpot.onclose=()=>{if(curIv==='1s')setTimeout(startKline,2000);};
     wsSpot.onmessage=e=>{
       try{
-        const d=JSON.parse(e.data);
-        const price=+d.p;
+        const msg=JSON.parse(e.data);
+        if(!msg.k)return;
+        const k=msg.k;
+        const price=+k.c;
         if(!price||price<=0)return;
-        if(!kData.length)return;
-        // 直接在最後一根蠟燭上更新（蠟燭即時波動）
-        const last=kData[kData.length-1];
-        last.c=price;
-        last.h=Math.max(last.h,price);
-        last.l=Math.min(last.l,price);
-        drawC('klineCanvas','spotWrap','sTip',kData,'1m',260);
+        const candle={t:+k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
+        if(kData.length&&kData[kData.length-1].t===candle.t){
+          // 在同一根蠟燭上即時波動
+          kData[kData.length-1]=candle;
+        }else{
+          // 新蠟燭開始
+          kData.push(candle);
+          if(kData.length>60)kData.shift();
+        }
+        drawC('klineCanvas','spotWrap','sTip',kData,'3m',260);
       }catch(err){}
     };
   }else{
@@ -783,7 +797,7 @@ async function startFutKline(){
   if(futSecT){clearInterval(futSecT);futSecT=null;}
   futData=[];
 
-  const apiIv=futIv==='1s'?'1m':futIv;
+  const apiIv=futIv==='1s'?'3m':futIv;
   const limit=80;
 
   try{
@@ -797,7 +811,8 @@ async function startFutKline(){
   }catch(e){}
 
   try{
-    wsFut=new WebSocket(`wss://fstream.binance.com/ws/${sel.toLowerCase()}@kline_${apiIv}`);
+    const futWsIv=futIv==='1s'?'3m':futIv;
+    wsFut=new WebSocket(`wss://fstream.binance.com/ws/${sel.toLowerCase()}@kline_${futWsIv}`);
     wsFut.onclose=()=>setTimeout(startFutKline,3000);
     wsFut.onerror=()=>setTimeout(startFutKline,3000);
     wsFut.onmessage=e=>{
@@ -846,7 +861,10 @@ function drawC(cid,wid,tid,data,iv,H){
   const maxP=Math.max(...drawData.map(k=>k.h)),minP=Math.min(...drawData.map(k=>k.l)),range=maxP-minP||1;
   const toY=p=>PT+cH-((p-minP)/range)*cH;
   for(let i=0;i<=4;i++){const y=PT+(cH/4)*i;ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(PL,y);ctx.lineTo(W-PR,y);ctx.stroke();const price=maxP-(range/4)*i;ctx.fillStyle='#3d4260';ctx.font='10px "Space Mono",monospace';ctx.textAlign='left';ctx.fillText('$'+fP(price),W-PR+6,y+4);}
-  const n=drawData.length,step=cW/n,bW=Math.max(3,Math.min(step*.7,20));
+  // 根據蠟燭數量自動調整寬度，讓蠟燭更明顯
+  const n=drawData.length;
+  const step=cW/n;
+  const bW=Math.max(4,Math.min(step*0.75,24));
   drawData.forEach((k,i)=>{const x=PL+i*step+step/2,isUp=k.c>=k.o,col=isUp?'#00d68f':'#ff4d6a';ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,toY(k.h));ctx.lineTo(x,toY(k.l));ctx.stroke();const bT=toY(Math.max(k.o,k.c)),bB=toY(Math.min(k.o,k.c));ctx.fillStyle=col;ctx.fillRect(x-bW/2,bT,bW,Math.max(1.5,bB-bT));});
   ctx.fillStyle='#3d4260';ctx.font='10px "Space Mono",monospace';ctx.textAlign='center';
   const ls=Math.max(1,Math.floor(n/6));for(let i=0;i<n;i+=ls)ctx.fillText(fT(data[i].t,iv),PL+i*step+step/2,H-PB+16);
